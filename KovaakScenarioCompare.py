@@ -1,3 +1,9 @@
+# USER INPUTS
+SCENARIO_NAMES = ['VT Air Advanced', 'Air Voltaic']     # INPUT IN THE TWO SCENARIOS YOU WANT TO COMPARE (first is X axis)
+STEP = [100, 4]     # INPUT SET STEP SIZE FOR GRID ON GRAPH
+MAX_ENTRIES = [600, 600]    # INPUT AMOUNT OF LEADERBOARD ENTRIES TO PULL
+
+# IMPORTS
 import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -5,26 +11,10 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 import requests
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
-
-# INPUT IN TWO SCENARIO NAMES (first is X axis)
-SCENARIO_NAMES = ['VT Air Advanced', 'Air Voltaic']
-
-# INPUT SET STEP SIZE FOR GRID ON GRAPH
-STEP = [100, 4]
-
-# INPUT AMOUNT OF LEADERBOARD PAGES TO PULL. EACH PAGE HAS 100 ENTRIES, SO 1 ITERATES THROUGH 200 ENTRIES (page 0,and 1)
-MAX_PAGES = [5, 5]
-
-# IF YOU WANT TO SEE MAX SCORES PUT "Y" BELOW
-Show_Max = "Y"
-
-# USE MEDIAN TO IDENTIFY TRENDLINE PUT "Y" BELOW (ELSE MAX SCORES ARE USED)
-UseMedian = "N"
 
 # ARRAY SETUP
 Leaderboard_ID = [0] * len(SCENARIO_NAMES)
+Play_Avg = [0] * len(SCENARIO_NAMES)
 
 # REQUEST SCENARIO PATH ONE TIME TO GET AMOUNT OF PAGES ON THE SCENARIOS PAGE
 session = requests.Session()
@@ -43,6 +33,9 @@ for i in range(Max_Page + 1):
             index = SCENARIO_NAMES.index(Data['scenarioName'])
             Leaderboard_ID[index] = Data['leaderboardId']
             print(f"Scenario ID Found for: {SCENARIO_NAMES[index]}, {Leaderboard_ID[index]}")
+            Plays = Data['counts']['plays']
+            Entries = Data['counts']['entries']
+            Play_Avg[index] = Plays/Entries
         except ValueError:
             pass
 
@@ -54,13 +47,11 @@ session.close()
 # CREATE DICTIONARY
 Score_Dic = {}
 
-# ITERATE THROUGH EACH LEADERBOARD
-
 # FUNCTION TO PROCESS EACH PAGE OF EACH LEADERBOARD (FUNCTION CALLED VIA THREADING)
 def process_leaderboard(leaderboard_id, page, session, Counti, score_lock, Score_Dic,Name, LeaderboardCount, Max_Page, i):
 
     # PULL LEADERBOARD
-    r = session.get(f"https://kovaaks.com/webapp-backend/leaderboard/scores/global?leaderboardId={leaderboard_id}&page={page}&max=100").json()
+    r = session.get(f"https://kovaaks.com/webapp-backend/leaderboard/scores/global?leaderboardId={leaderboard_id}&page={page}&max=10").json()
 
     # ITERATE THROUGH ALL "data" ROWS ON EACH PLAYLIST PAGE AND SEND DATA TO LEADERBOARD COLUMN OF RELEVANT ARRAYS
     for Data in r['data']:
@@ -134,7 +125,7 @@ score_lock = Lock()  # Create a lock for protecting shared resources
 
 # START THREADER
 with requests.Session() as session:  # Create ONE session
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=100) as executor:
         Counti = 0
         futures = []
 
@@ -142,19 +133,21 @@ with requests.Session() as session:  # Create ONE session
         for i in range(len(Leaderboard_ID)):
 
             # REQUEST LEADERBOARD PATH ONE TIME TO GET AMOUNT OF PAGES ON EACH LEADERBOARD
-            r = session.get(f"https://kovaaks.com/webapp-backend/leaderboard/scores/global?leaderboardId={Leaderboard_ID[i]}&page=0&max=100").json()
-            Max_Page = r['total'] // 100
+            r = session.get(f"https://kovaaks.com/webapp-backend/leaderboard/scores/global?leaderboardId={Leaderboard_ID[i]}&page=0&max=10").json()
+            Max_Entries = r['total']
 
             # MANUAL LIMIT
-            Max_Page = min(Max_Page, MAX_PAGES[i])
+            Max_Entries = min(Max_Entries, MAX_ENTRIES[i])
+            Max_Page = Max_Entries // 10
 
             # SCENARIO NAME
             Name = SCENARIO_NAMES[i]
             Name = Name.replace(" ", "+")
 
             LeaderboardCount = len(SCENARIO_NAMES)
+
             # ITERATE THROUGH ALL LEADERBOARD PAGES AND SEND TO FUNCTION
-            for ii in range(Max_Page + 1):
+            for ii in range(Max_Page):
                 futures.append(executor.submit(process_leaderboard, Leaderboard_ID[i], ii, session, Counti, score_lock,Score_Dic, Name, LeaderboardCount, Max_Page, i))
 
             # LOCK CRITERIA (NEEDED)
@@ -165,7 +158,6 @@ with requests.Session() as session:  # Create ONE session
         for future in as_completed(futures):
             future.result()  # No need to handle this since the processing is done within the function
 
-
 # ITERATE THROUGH ALL VALUES IN THE DICTIONARY AND APPEND GOOD VALUES TO ARRAY FOR PLOTTING
 array1 = []
 array2 = []
@@ -174,111 +166,105 @@ array4 = []
 
 for key, value in Score_Dic.items():
 
+    # IF PLAYER PLAYED BOTH SCENARIOS
     if value[1] is not None and value[4] is not None:
         Date1 = value[1]
         Date2 = value[4]
         difference = Date1 - Date2
         daysd = difference.days
 
+        # IF PLAYER PLAYED BOTH WITHIN ONE YEAR OF EACH OTHER
         if abs(daysd) < 365 and value[0] is not None and value[3] is not None:
 
+            # I FORGOT WHY I HAD THIS???
             if value[0] != 0 and value[3] != 0 and (value[2] - value[0]) != 0:
-                # MEDIAN
+
+                # MEDIAN SCORE ARRAY
                 array1.append(value[0])
                 array2.append(value[3])
-                # MAX
+
+                # MAX SCORE ARRAY
                 array3.append(value[2])
                 array4.append(value[5])
 
-
-# PLOTTING AND EXPORT OF PLOT
+# CONVERT DATA TO NUMPY ARRAYS
 array1 = np.array(array1)  # Ensure array1 is a NumPy array
 array2 = np.array(array2)  # Ensure array2 is a NumPy array
 array3 = np.array(array3)  # Ensure array1 is a NumPy array
 array4 = np.array(array4)  # Ensure array2 is a NumPy array
 
-# Calculate the appropriate limits for x-axis and y-axis to ensure multiples of the step size
+# SET PLOT LIMITS
 x_min = np.floor(min(array1) / STEP[0]) * STEP[0]
 x_max = np.ceil(max(array3) / STEP[0]) * STEP[0]
-
 y_min = np.floor(min(array2) / STEP[1]) * STEP[1]
 y_max = np.ceil(max(array4) / STEP[1]) * STEP[1]
 
-fig1 = plt.figure(figsize=(10, 10))
-plt.scatter(array1, array2, color='black', marker='*', label='Median')
 
-if Show_Max == "Y":
-    plt.scatter(array3, array4, color='blue', marker='*', label='Max')
-    for i in range(len(array1)):
-        plt.plot([array1[i], array3[i]], [array2[i], array4[i]], color='gray', linewidth=0.5)
+# FUNCTION FOR FILTERED TRENDLINE
+def filtered_trendline(x, y, degree, std_thresholds):
 
-# FIT A TREND LINE 1 DEGREE POLYNOMINAL (TREND LINE IS BAD) SET UP THE WEIGHTS
-if UseMedian == "Y":
-    t=2
-else:
-    array1 = array3
-    array2 = array4
+    # ITERATE THROUGH STD
+    for thresh in std_thresholds:
+        coeffs = np.polyfit(x, y, degree)
+        fit = np.polyval(coeffs, x)
+        residuals = y - fit
+        std_resid = np.std(residuals)
+        mask = np.abs(residuals) <= thresh * std_resid
+        x, y = x[mask], y[mask]
 
+    # Final polynomial fit
+    coeffs = np.polyfit(x, y, degree)
+    return coeffs
 
-# Parameters
-degree = 1  # Linear
-std_thresholds = [2, 1,0.5]  # Filter progressively
-
-# Start with all points
+# MEDIAN TRENDLINE
 x = array1.copy()
 y = array2.copy()
+coeffs = filtered_trendline(x, y, degree=1, std_thresholds=[2, 1.5, 1])
+slope1, intercept1 = coeffs
 
-# Iterative filtering
-for thresh in std_thresholds:
-    coeffs = np.polyfit(x, y, degree)
-    fit = np.polyval(coeffs, x)
-    residuals = y - fit
-    std_resid = np.std(residuals)
-    mask = np.abs(residuals) <= thresh * std_resid
-    x, y = x[mask], y[mask]
+# MAX TRENDLINE
+x = array3.copy()
+y = array4.copy()
+coeffs = filtered_trendline(x, y, degree=1, std_thresholds=[2, 1.5, 1])
+slope2, intercept2 = coeffs
 
-# Final fit after filtering
-coeffs = np.polyfit(x, y, degree)
-trend_line_x = np.linspace(x.min(), x.max(), 100)
-trend_line_y = np.polyval(coeffs, trend_line_x)
+# PLOT MEDIAN AND MAX POINTS
+fig1 = plt.figure(figsize=(10, 10))
+plt.scatter(array1, array2, color='black', marker='*', label='Median')
+plt.scatter(array3, array4, color='blue', marker='*', label='Max')
+for i in range(len(array1)):
+    plt.plot([array1[i], array3[i]], [array2[i], array4[i]], color='gray', linewidth=0.5)
 
-# Equation parameters
-slope, intercept = coeffs
-equation = f"y = {slope:.4f}x + {intercept:.4f}"
-
-# R² using actual data
-model = LinearRegression()
-model.fit(array1.reshape(-1, 1), array2)
-predicted = model.predict(array1.reshape(-1, 1))
-r2 = r2_score(array2, predicted)
-
-
+# PLOTTING TRENDLINES
 x_line = np.array([0, x_max])
-y_line = slope * x_line + intercept
-
-plt.plot(x_line, y_line, color='red', linewidth=1)
+y_line1 = slope1 * x_line + intercept1
+y_line2 = slope2 * x_line + intercept2
+plt.plot(x_line, y_line1, color='red', linewidth=1, label='Median Trend Line')
+plt.plot(x_line, y_line2, color='red', linewidth=1, linestyle=':', label='Max Trend Line')
 
 # FINAL PLOTTING STUFF
-plt.title(SCENARIO_NAMES[1] + ' vs ' + SCENARIO_NAMES[0] + ', Recent Median Score Correlation')
-fig1.suptitle(f"Equation of the trendline: y = {slope:.4f}x + {intercept:.4f}   R² value: {r2:.4f}", y=0.92, fontsize=12)
-plt.xlim(None, None)
-plt.ylim(None, None)
-plt.grid(True, linestyle='--', color='gray', alpha=0.6)
-plt.xlabel(SCENARIO_NAMES[0] + ' Scores')
-plt.ylabel(SCENARIO_NAMES[1] + ' Scores')
-
-
-# Set limits for both axes
+plt.title(f"{SCENARIO_NAMES[1]} vs {SCENARIO_NAMES[1]} Recent Score Correlation: Based on top {len(x)} players")
+fig1.suptitle(
+    f"Equation of the median score trendline: y = {slope1:.4f}x + {intercept1:.4f}\n"
+    f"Equation of the max score trendline: y = {slope2:.4f}x + {intercept2:.4f}",
+    y=0.98,
+    fontsize=12
+)
 plt.xlim(x_min, x_max)
 plt.ylim(y_min, y_max)
+plt.grid(True, linestyle='--', color='gray', alpha=0.6)
+#plt.xlabel(f"{SCENARIO_NAMES[0]} Scores  (Avg plays per person {float(Play_Avg[0]):,.1f})")
+#plt.ylabel(f"{SCENARIO_NAMES[1]} Scores  (Avg plays per person {float(Play_Avg[1]):,.1f})")
+plt.xlabel(f"{SCENARIO_NAMES[0]} Scores")
+plt.ylabel(f"{SCENARIO_NAMES[1]} Scores")
 
-# Set x-ticks and y-ticks to show every step_size units
+# SET X AND Y TICKS
 plt.xticks(np.arange(x_min, x_max + STEP[0], STEP[0]))
 plt.yticks(np.arange(y_min, y_max + STEP[1], STEP[1]))
 
 plt.legend()
+plt.tight_layout()
 fig1.savefig(SCENARIO_NAMES[1] + " vs " + SCENARIO_NAMES[0] +".png")
 
-print(f"Equation of the trendline: y = {slope:.4f}x + {intercept:.4f}")
-print(f"R² value: {r2:.4f}")
-
+print(f"Equation of the median score trendline: y = {slope1:.4f}x + {intercept1:.4f}")
+print(f"Equation of the max score trendline: y = {slope2:.4f}x + {intercept2:.4f}")
