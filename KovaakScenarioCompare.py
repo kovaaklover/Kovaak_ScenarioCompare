@@ -1,4 +1,6 @@
 import statistics
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
@@ -53,92 +55,116 @@ session.close()
 Score_Dic = {}
 
 # ITERATE THROUGH EACH LEADERBOARD
-Counti = 0
-for i in range(0, len(SCENARIO_NAMES)):
 
-    Name = SCENARIO_NAMES[i]
-    Name = Name.replace(" ", "+")
+# FUNCTION TO PROCESS EACH PAGE OF EACH LEADERBOARD (FUNCTION CALLED VIA THREADING)
+def process_leaderboard(leaderboard_id, page, session, Counti, score_lock, Score_Dic,Name, LeaderboardCount, Max_Page, i):
 
-    # REQUEST LEADERBOARD PATH ONE TIME TO GET AMOUNT OF PAGES ON EACH LEADERBOARD
-    session = requests.Session()
-    r = session.get(f"https://kovaaks.com/webapp-backend/leaderboard/scores/global?leaderboardId={Leaderboard_ID[i]}&page=0&max=100").json()
-    Max_Page = r['total']//100
+    # PULL LEADERBOARD
+    r = session.get(f"https://kovaaks.com/webapp-backend/leaderboard/scores/global?leaderboardId={leaderboard_id}&page={page}&max=100").json()
 
-    # MANUAL LIMIT
-    Max_Page = min(Max_Page,MAX_PAGES[i])
+    # ITERATE THROUGH ALL "data" ROWS ON EACH PLAYLIST PAGE AND SEND DATA TO LEADERBOARD COLUMN OF RELEVANT ARRAYS
+    for Data in r['data']:
 
-    # ITERATE THROUGH ALL LEADERBOARD PAGES
-    for ii in range(Max_Page + 1):
-        r = session.get(f"https://kovaaks.com/webapp-backend/leaderboard/scores/global?leaderboardId={Leaderboard_ID[i]}&page={ii}&max=100").json()
-        print(f"Leaderboard {i + 1} of {len(SCENARIO_NAMES)}. Page: {ii} of {Max_Page} data pull.")
+        # IF PERSON HAS AN ACTIVE KOVAAK PROFILE
+        if 'webappUsername' in Data and Data['webappUsername'] is not None:
 
+            # GET ACCOUNT ID AND NAME
+            try:
+                Steam_ID = Data['steamAccountName']
+                Kovaak_Name = Data['webappUsername']
+                Kovaak_Name2 = Kovaak_Name.replace(" ", "+")
+                MaxScore = Data['score']
 
-        # ITERATE THROUGH ALL "data" ROWS ON EACH PLAYLIST PAGE AND SEND DATA TO LEADERBOARD COLUMN OF RELEVANT ARRAYS
-        for Data in r['data']:
+                # ITERATE TO USERS LAST 10 PLAY PAGE
+                r2 = session.get(f"https://kovaaks.com/webapp-backend/user/scenario/last-scores/by-name?username={Kovaak_Name2}&scenarioName={Name}").json()
 
-            # IF PERSON HAS AN ACTIVE KOVAAK PROFILE
-            if 'webappUsername' in Data and Data['webappUsername'] is not None:
+                # ITERATE THROUGH ALL SCORES IN TOP 10 SCORE
+                epoch = 0
+                count = 0
+                scores = []
 
-                # GET ACCOUNT ID AND NAME
-                try:
-                    Steam_ID = Data['steamAccountName']
-                    Kovaak_Name = Data['webappUsername']
-                    Kovaak_Name2 = Kovaak_Name.replace(" ", "+")
-                    MaxScore = Data['score']
+                date_time1 = None
+                for entry in r2:
 
-                    #print(Kovaak_Name2)
-                    # ITERATE TO USERS LAST 10 PLAY PAGE
-                    r2 = session.get(f"https://kovaaks.com/webapp-backend/user/scenario/last-scores/by-name?username={Kovaak_Name2}&scenarioName={Name}").json()
+                    # IF NO ERRORS
+                    if "error" not in entry:
+                        score = entry["score"]
+                        epoch = entry["attributes"]["epoch"]
+                        epoch = int(epoch)
 
-                    # ITERATE THROUGH ALL SCORES IN TOP 10 SCORE
-                    epoch = 0
-                    count = 0
-                    scores = []
+                        #CONVERT THE EPOCH TO DATE TIME
+                        epoch = epoch / 1000  # Convert to seconds
+                        date_time = datetime.fromtimestamp(epoch)  # Convert to datetime
+                        if date_time1 == None:
+                            date_time1 = date_time
 
-                    date_time1 = None
-                    for entry in r2:
+                        # IF PLAY IS WITHIN 1 YEAR OF MOST RECENT PLAY
+                        difference = date_time1 - date_time
+                        daysd = difference.days
 
-                        # IF NO ERRORS
-                        if "error" not in entry:
-                            score = entry["score"]
-                            epoch = entry["attributes"]["epoch"]
-                            epoch = int(epoch)
+                        # IF SCORE IS WITHIN 1 YEAR OF FIRST SCORE
+                        if daysd < 365:
+                            count += 1
+                            scores.append(score)
 
-                            #CONVERT THE EPOCH TO DATE TIME
-                            epoch = epoch / 1000  # Convert to seconds
-                            date_time = datetime.fromtimestamp(epoch)  # Convert to datetime
-                            if date_time1 == None:
-                                date_time1 = date_time
+                # GET ACTUAL SCORE AVERAGE
+                if count > 3:
+                    Final_Score = statistics.median(scores)
 
-                            # IF PLAY IS WITHIN 1 YEAR OF MOST RECENT PLAY
-                            difference = date_time1 - date_time
-                            daysd = difference.days
+                    # IF STEAM NAME (KEY) EXISTS FILL IN RELEVANT SCORE LIST FOR STEAM NAME
+                    with score_lock:
+                        if Steam_ID in Score_Dic:
+                            Score_Dic[Steam_ID][Counti] = Final_Score
+                            Score_Dic[Steam_ID][Counti + 1] = date_time1
+                            Score_Dic[Steam_ID][Counti + 2] = MaxScore
 
-                            # IF SCORE IS WITHIN 1 YEAR OF FIRST SCORE
-                            if daysd < 365:
-                                count += 1
-                                scores.append(score)
+                        # IF STEAM NAME (KEY) DOES NOT EXIST, CREATE NEW KEY FOR STEAM NAME AND FILL IN RELEVANT SCORE LIST FOR STEAM NAME
+                        elif Steam_ID not in Score_Dic:
+                            Score_Dic[Steam_ID] = [None]*len(SCENARIO_NAMES)*3
+                            Score_Dic[Steam_ID][Counti] = Final_Score
+                            Score_Dic[Steam_ID][Counti + 1] = date_time1
+                            Score_Dic[Steam_ID][Counti + 2] = MaxScore
+            except KeyError:
+                pass
 
-                        # GET ACTUAL SCORE AVERAGE
-                        if count > 3:
-                            Final_Score = statistics.median(scores)
+    print(f"Leaderboard {i + 1} of {LeaderboardCount}. Page: {page} of {Max_Page} data pull.")
 
-                            # IF STEAM NAME (KEY) EXISTS FILL IN RELEVANT SCORE LIST FOR STEAM NAME
-                            if Steam_ID in Score_Dic:
-                                Score_Dic[Steam_ID][Counti] = Final_Score
-                                Score_Dic[Steam_ID][Counti + 1] = date_time1
-                                Score_Dic[Steam_ID][Counti + 2] = MaxScore
+# THREADING AND LOCK PROTECTION
+score_lock = Lock()  # Create a lock for protecting shared resources
 
-                            # IF STEAM NAME (KEY) DOES NOT EXIST, CREATE NEW KEY FOR STEAM NAME AND FILL IN RELEVANT SCORE LIST FOR STEAM NAME
-                            elif Steam_ID not in Score_Dic:
-                                Score_Dic[Steam_ID] = [None]*len(SCENARIO_NAMES)*3
-                                Score_Dic[Steam_ID][Counti] = Final_Score
-                                Score_Dic[Steam_ID][Counti + 1] = date_time1
-                                Score_Dic[Steam_ID][Counti + 2] = MaxScore
-                except KeyError:
-                    pass
-    session.close()
-    Counti += 3
+# START THREADER
+with requests.Session() as session:  # Create ONE session
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        Counti = 0
+        futures = []
+
+        # ITERATE THROUGH ALL LEADERBOARDS
+        for i in range(len(Leaderboard_ID)):
+
+            # REQUEST LEADERBOARD PATH ONE TIME TO GET AMOUNT OF PAGES ON EACH LEADERBOARD
+            r = session.get(f"https://kovaaks.com/webapp-backend/leaderboard/scores/global?leaderboardId={Leaderboard_ID[i]}&page=0&max=100").json()
+            Max_Page = r['total'] // 100
+
+            # MANUAL LIMIT
+            Max_Page = min(Max_Page, MAX_PAGES[i])
+
+            # SCENARIO NAME
+            Name = SCENARIO_NAMES[i]
+            Name = Name.replace(" ", "+")
+
+            LeaderboardCount = len(SCENARIO_NAMES)
+            # ITERATE THROUGH ALL LEADERBOARD PAGES AND SEND TO FUNCTION
+            for ii in range(Max_Page + 1):
+                futures.append(executor.submit(process_leaderboard, Leaderboard_ID[i], ii, session, Counti, score_lock,Score_Dic, Name, LeaderboardCount, Max_Page, i))
+
+            # LOCK CRITERIA (NEEDED)
+            with score_lock:
+                Counti += 3
+
+        # PROCESS RESULTS
+        for future in as_completed(futures):
+            future.result()  # No need to handle this since the processing is done within the function
+
 
 # ITERATE THROUGH ALL VALUES IN THE DICTIONARY AND APPEND GOOD VALUES TO ARRAY FOR PLOTTING
 array1 = []
