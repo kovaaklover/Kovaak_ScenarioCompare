@@ -243,7 +243,7 @@ plt.plot(x_line, y_line1, color='red', linewidth=1, label='Median Trend Line')
 plt.plot(x_line, y_line2, color='red', linewidth=1, linestyle=':', label='Max Trend Line')
 
 # FINAL PLOTTING STUFF
-plt.title(f"{SCENARIO_NAMES[1]} vs {SCENARIO_NAMES[1]} Recent Score Correlation: Based on top {len(x)} players")
+plt.title(f"{SCENARIO_NAMES[1]} vs {SCENARIO_NAMES[0]} Recent Score Correlation: Based on top {len(x)} players")
 fig1.suptitle(
     f"Equation of the median score trendline: y = {slope1:.4f}x + {intercept1:.4f}\n"
     f"Equation of the max score trendline: y = {slope2:.4f}x + {intercept2:.4f}",
